@@ -39,7 +39,7 @@ test('major integrated views exist', () => {
   ['renderHome', 'renderTasks', 'renderCare', 'renderScales', 'renderSettings', 'renderCheckin'].forEach(name => {
     assert.match(app, new RegExp(`function ${name}\\(`));
   });
-  ['renderWBSList', 'renderWBSGantt', 'renderTaskMatrix', 'normalizeImportedData', 'convertActToolState', 'convertTaskToolState'].forEach(name => {
+  ['renderWBSList', 'renderWBSGantt', 'renderTaskMatrix', 'renderTaskMasterSettings', 'normalizeImportedData', 'convertActToolState', 'convertTaskToolState'].forEach(name => {
     assert.match(app, new RegExp(`function ${name}\\(`));
   });
   ['AAQ-II', 'WHO-5', 'FFMQ-39', 'VQ'].forEach(name => {
@@ -47,6 +47,9 @@ test('major integrated views exist', () => {
   });
   ['owners', 'tags', 'stress_locations', 'stress_areas', 'stressKey', 'daily_logs', 'smxData'].forEach(token => {
     assert.match(app, new RegExp(token));
+  });
+  ['normalizeGasUrl', 'syncToSheets', 'loadFromSheetsByJsonp', 'scheduleSheetsSync'].forEach(name => {
+    assert.match(app, new RegExp(`function ${name}\\(`));
   });
 });
 
@@ -67,9 +70,13 @@ test('mobile and design constraints are represented', () => {
 });
 
 test('task and stress surfaces preserve previous tool concepts', () => {
-  ['担当（複数選択可）', '項目（複数選択可）', '開始日', '終了日', '緊急', '重要', '4象限', '場所×部位', 'ストレスマトリクス'].forEach(token => {
+  ['担当（複数選択可）', '項目（複数選択可）', '開始日', '終了日', '緊急', '重要', '進捗', '工数', '期間', 'フラグ', '4象限', '場所×部位', 'ストレスマトリクス'].forEach(token => {
     assert.match(app, new RegExp(token));
   });
+  ['moveTask', 'moveCategory', 'moveOwner', 'moveTag', 'resetTaskMasters'].forEach(token => {
+    assert.match(app, new RegExp(`function ${token}\\(`));
+  });
+  assert.match(app, /uniqueCategoryId/);
   ['Strategic', 'Technical', 'People', 'Operational', 'External'].forEach(token => {
     assert.match(app, new RegExp(token));
   });

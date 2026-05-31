@@ -554,6 +554,64 @@ p {
   background: var(--green-soft);
 }
 
+.danger-text {
+  color: var(--red);
+}
+
+.gas-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.gas-head {
+  flex-wrap: wrap;
+}
+
+.sync-pill {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: normal;
+}
+
+.sync-pill.synced {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+  color: var(--green);
+}
+
+.sync-pill.error {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+  color: var(--red);
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-soft);
+}
+
+.sync-dot.loading,
+.sync-dot.syncing {
+  background: var(--amber);
+}
+
+.sync-dot.synced {
+  background: var(--green);
+}
+
+.sync-dot.error {
+  background: var(--red);
+}
+
 .scale-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(42px, 1fr));
@@ -591,6 +649,198 @@ p {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
+}
+
+.task-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.task-command {
+  display: grid;
+  gap: 12px;
+  margin: 0 -16px 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.task-command h2 {
+  margin: 0 0 4px;
+}
+
+.task-capacity-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.task-capacity-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.task-effort-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.task-effort-bars {
+  display: grid;
+  gap: 8px;
+}
+
+.effort-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 132px) minmax(0, 1fr) 48px;
+  gap: 8px;
+  align-items: center;
+}
+
+.effort-name {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effort-name i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.effort-row strong {
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-list {
+  display: grid;
+  gap: 10px;
+}
+
+.legacy-task {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "order body"
+    "order actions"
+    "edit edit";
+  gap: 10px;
+}
+
+.task-order {
+  grid-area: order;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+
+.legacy-task-body {
+  grid-area: body;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.task-actions {
+  grid-area: actions;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.task-actions .select {
+  width: auto;
+  min-width: 112px;
+  min-height: 38px;
+  padding-block: 6px;
+  font-size: 13px;
+}
+
+.task-period {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.task-inline-edit {
+  grid-area: edit;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.task-inline-edit > label {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.master-card {
+  display: grid;
+  gap: 12px;
+}
+
+.master-list {
+  display: grid;
+  gap: 8px;
+}
+
+.master-row,
+.master-add {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.master-row.simple,
+.master-add.simple {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.master-add {
+  margin-top: 2px;
+  background: var(--surface);
+}
+
+.master-actions {
+  justify-content: flex-end;
+}
+
+.swatch-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+}
+
+.color-input {
+  width: 44px;
+  min-width: 44px;
+  padding: 4px;
 }
 
 .task-title {
@@ -992,6 +1242,48 @@ p {
   margin-top: 12px;
 }
 
+.stress-dock {
+  position: sticky;
+  top: calc(max(8px, var(--safe-top)) + 52px);
+  z-index: 8;
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+.stress-dock-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.stress-dock-head div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.stress-dock-head strong {
+  min-width: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stress-dock-head span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .stress-loc-card {
   display: grid;
   gap: 8px;
@@ -1041,6 +1333,11 @@ p {
   gap: 6px;
 }
 
+.score-choice-row.compact .score-choice {
+  min-height: 52px;
+  padding-block: 6px;
+}
+
 .score-choice {
   min-height: 64px;
   display: grid;
@@ -1067,6 +1364,26 @@ p {
 .score-choice span {
   font-size: 10px;
   line-height: 1.2;
+}
+
+.stress-note-toggle {
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.stress-note-toggle summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.stress-note-toggle .textarea {
+  margin-top: 6px;
+  min-height: 74px;
 }
 
 .empty {
@@ -1148,6 +1465,34 @@ p {
   }
 }
 
+@media (max-width: 520px) {
+  .task-capacity-form,
+  .master-row,
+  .master-add,
+  .master-row.simple,
+  .master-add.simple {
+    grid-template-columns: 1fr;
+  }
+
+  .master-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .legacy-task {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "body"
+      "actions"
+      "order"
+      "edit";
+  }
+
+  .task-order {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 360px) {
   .grid-2,
   .grid-3 {
@@ -1165,6 +1510,11 @@ p {
   .stress-loc-grid,
   .score-choice-row {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .effort-row,
+  .task-capacity-form {
+    grid-template-columns: 1fr;
   }
 }
 

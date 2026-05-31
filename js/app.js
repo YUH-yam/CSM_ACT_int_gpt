@@ -2,6 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'act_task_compass_state_v1';
+  const GAS_URL_KEY = 'act_task_compass_gas_url';
   const TODAY = () => new Date().toISOString().slice(0, 10);
   const NOW = () => new Date().toISOString();
   const SCALES = window.ACT_SCALES || {};
@@ -131,10 +132,18 @@
   let route = { view: state.settings.onboarding_completed ? 'home' : 'onboarding', params: {} };
   let scaleAnswers = {};
   let taskFilter = 'all';
-  let taskSection = 'tasks';
+  let taskSection = 'manage';
+  let taskInlineEditor = null;
   let careMode = 'stress';
   let wbsMode = 'list';
   let selectedStressCell = null;
+  let gasUrl = loadGasUrlValue();
+  let syncTimer = null;
+  let isSyncing = false;
+  let syncState = gasUrl ? 'idle' : 'idle';
+  let syncMessage = gasUrl ? 'Sheets設定済み' : 'Sheets未設定';
+  let gasMessage = '';
+  let gasMessageIsError = false;
 
   function stressKey(locId, areaId) {
     return `${locId}__${areaId}`;
@@ -195,13 +204,17 @@
       ...(input || {}),
       settings: { ...base.settings, ...((input && input.settings) || {}) }
     };
-    next.categories = normalizeCategories(next.categories);
+    const categorySet = normalizeCategorySet(next.categories);
+    next.categories = categorySet.categories;
     next.owners = normalizeStringList(next.owners, OWNER_DEFAULTS);
     next.tags = normalizeStringList(next.tags, TAG_DEFAULTS);
     next.stress_locations = normalizeStressLocations(next.stress_locations);
     next.stress_areas = normalizeStressAreas(next.stress_areas);
     next.stress_latest = normalizeStressLatest(next.stress_latest, next.stress_locations, next.stress_areas);
-    next.tasks = Array.isArray(next.tasks) ? next.tasks.map((task, idx) => normalizeTask(task, idx, next.categories, next.owners)).filter(Boolean) : [];
+    next.tasks = Array.isArray(next.tasks) ? next.tasks.map((task, idx) => normalizeTask({
+      ...task,
+      category: categorySet.aliases.get(String(task.category)) || task.category
+    }, idx, next.categories, next.owners)).filter(Boolean) : [];
     const maxTaskId = next.tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
     next.task_next_id = Math.max(Number(next.task_next_id) || 1, maxTaskId + 1);
     next.checkins = Array.isArray(next.checkins) ? next.checkins : [];
@@ -212,12 +225,34 @@
   }
 
   function normalizeCategories(value) {
+    return normalizeCategorySet(value).categories;
+  }
+
+  function normalizeCategorySet(value) {
     const src = Array.isArray(value) && value.length ? value : CATEGORY_DEFAULTS;
-    return src.map((item, idx) => ({
-      id: safeId(item.id || item.key || item.label || `category_${idx + 1}`, `category_${idx + 1}`),
-      label: String(item.label || item.name || item.key || `カテゴリ${idx + 1}`),
-      color: /^#[0-9a-f]{6}$/i.test(String(item.color || '')) ? item.color : CATEGORY_DEFAULTS[idx % CATEGORY_DEFAULTS.length].color
-    }));
+    const aliases = new Map();
+    const used = new Set();
+    const categories = src.map((item, idx) => {
+      const rawId = item.id || item.key || '';
+      const label = String(item.label || item.name || item.key || item.id || `カテゴリ${idx + 1}`);
+      const preferred = [rawId, item.key, item.id].map(v => String(v || '')).find(isAsciiCategoryId);
+      const fallback = `cat_${idx + 1}`;
+      const base = preferred ? asciiCategoryId(preferred, fallback) : fallback;
+      let id = base;
+      let n = 2;
+      while (used.has(id)) id = `${base}_${n++}`;
+      used.add(id);
+      [item.id, item.key, item.label, item.name, rawId, label].forEach(alias => {
+        const key = String(alias || '');
+        if (key) aliases.set(key, id);
+      });
+      return {
+        id,
+        label,
+        color: /^#[0-9a-f]{6}$/i.test(String(item.color || '')) ? item.color : CATEGORY_DEFAULTS[idx % CATEGORY_DEFAULTS.length].color
+      };
+    });
+    return { categories, aliases };
   }
 
   function normalizeStringList(value, fallback) {
@@ -312,9 +347,28 @@
     return id || fallback;
   }
 
-  function saveState() {
+  function isAsciiCategoryId(value) {
+    return /^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(String(value || '').trim());
+  }
+
+  function asciiCategoryId(value, fallback = `cat_${Date.now().toString(36)}`) {
+    const raw = String(value || '').trim();
+    const id = raw.replace(/\s+/g, '_').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+    return isAsciiCategoryId(id) ? id : fallback;
+  }
+
+  function uniqueCategoryId(label) {
+    const base = asciiCategoryId(label, `cat_${Date.now().toString(36)}`);
+    let id = base;
+    let n = 2;
+    while (state.categories.some(category => category.id === id)) id = `${base}_${n++}`;
+    return id;
+  }
+
+  function saveState(options = {}) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (!options.skipSync) scheduleSheetsSync();
       return true;
     } catch (error) {
       toast('端末内への保存に失敗しました。ブラウザの保存設定をご確認ください。');
@@ -383,6 +437,12 @@
     const effort = Number(task.effort) || 0;
     const progress = clamp(task.progress, 0, 100);
     return Math.max(0, effort * (1 - progress / 100));
+  }
+
+  function doneEffort(task) {
+    const effort = Number(task.effort) || 0;
+    const progress = clamp(task.progress, 0, 100);
+    return Math.max(0, effort * (progress / 100));
   }
 
   function taskIsToday(task) {
@@ -679,19 +739,46 @@
   function renderTasks() {
     return `
       ${topbar('タスク')}
-      <div class="segmented no-print task-section-tabs" style="margin-bottom:12px">
-        <button type="button" data-action="task-section" data-section="tasks" aria-pressed="${taskSection === 'tasks'}">入力</button>
-        <button type="button" data-action="task-section" data-section="matrix" aria-pressed="${taskSection === 'matrix'}">4象限</button>
-        <button type="button" data-action="task-section" data-section="wbs" aria-pressed="${taskSection === 'wbs'}">WBS</button>
-      </div>
-      ${taskSection === 'matrix' ? renderTaskMatrix() : taskSection === 'wbs' ? renderWBSPanel() : renderTaskInputAndList()}`;
+      <div class="task-shell">
+        <div class="segmented no-print task-section-tabs" style="margin-bottom:12px">
+          <button type="button" data-action="task-section" data-section="manage" aria-pressed="${taskSection === 'manage'}">管理</button>
+          <button type="button" data-action="task-section" data-section="matrix" aria-pressed="${taskSection === 'matrix'}">4象限</button>
+          <button type="button" data-action="task-section" data-section="wbs" aria-pressed="${taskSection === 'wbs'}">WBS</button>
+          <button type="button" data-action="task-section" data-section="masters" aria-pressed="${taskSection === 'masters'}">設定</button>
+        </div>
+        ${taskSection === 'matrix' ? renderTaskMatrix() : taskSection === 'wbs' ? renderWBSPanel() : taskSection === 'masters' ? renderTaskMasterSettings() : renderTaskInputAndList()}
+      </div>`;
   }
 
   function renderTaskInputAndList() {
     const visible = filteredTasks();
+    const dailyCap = Math.max(.1, Number(state.settings.daily_capacity) || 8);
+    const weeklyCap = Math.max(.1, Number(state.settings.weekly_capacity) || 40);
+    const todayRem = activeTasks().filter(taskIsToday).reduce((sum, task) => sum + remainingEffort(task), 0);
+    const todayDone = activeTasks().filter(taskIsToday).reduce((sum, task) => sum + doneEffort(task), 0);
+    const weekRem = activeTasks().filter(taskIsThisWeek).reduce((sum, task) => sum + remainingEffort(task), 0);
+    const weekDone = activeTasks().filter(taskIsThisWeek).reduce((sum, task) => sum + doneEffort(task), 0);
     return `
+      <section class="task-command">
+        <div>
+          <p class="eyebrow">Capacity & WBS</p>
+          <h2>タスクを作る、並べる、減らす</h2>
+          <p class="muted">前ツールの入力項目と編集機能をここに集約しました。</p>
+        </div>
+        <form id="taskCapacityForm" class="task-capacity-form no-print">
+          <label>日次<input class="input" name="daily_capacity" type="number" min="0.1" max="24" step="0.1" value="${state.settings.daily_capacity}"></label>
+          <label>週次<input class="input" name="weekly_capacity" type="number" min="0.1" max="168" step="0.1" value="${state.settings.weekly_capacity}"></label>
+          <button class="btn small" type="submit">保存</button>
+        </form>
+      </section>
+      <div class="summary-strip">
+        ${metricCard('今日の残り', `${todayRem.toFixed(1)}h`, `完了 ${todayDone.toFixed(1)}h / 上限 ${dailyCap.toFixed(1)}h`, todayRem / dailyCap, utilizationTone(todayRem / dailyCap))}
+        ${metricCard('今週の残り', `${weekRem.toFixed(1)}h`, `完了 ${weekDone.toFixed(1)}h / 上限 ${weeklyCap.toFixed(1)}h`, weekRem / weeklyCap, utilizationTone(weekRem / weeklyCap))}
+        ${metricCard('未完了', `${activeTasks().length}件`, `表示中 ${visible.length}件`, Math.min(1, activeTasks().length / 12), activeTasks().length ? 'amber' : 'green')}
+      </div>
+      ${renderCategoryEffort()}
       <details class="card task-entry no-print" open>
-        <summary><strong>タスクを追加</strong><span class="tiny">元ツール形式</span></summary>
+        <summary><strong>新しいタスクを追加</strong><span class="tiny">前ツール形式</span></summary>
         <form id="taskForm" style="margin-top:12px">
           ${taskEditFields({}, 'new')}
           <button class="btn primary block" type="submit">追加する</button>
@@ -700,10 +787,122 @@
       <div class="segmented no-print" style="margin-bottom:12px">
         <button type="button" data-action="task-filter" data-filter="all" aria-pressed="${taskFilter === 'all'}">すべて</button>
         <button type="button" data-action="task-filter" data-filter="self" aria-pressed="${taskFilter === 'self'}">自分</button>
-        <button type="button" data-action="task-filter" data-filter="delegated" aria-pressed="${taskFilter === 'delegated'}">委任</button>
+        <button type="button" data-action="task-filter" data-filter="del" aria-pressed="${taskFilter === 'del'}">委任</button>
         <button type="button" data-action="task-filter" data-filter="done" aria-pressed="${taskFilter === 'done'}">完了</button>
       </div>
-      <div class="stack">${visible.length ? visible.map(taskCard).join('') : '<div class="empty">表示するタスクはありません</div>'}</div>`;
+      <div class="task-list">${visible.length ? visible.map(taskCard).join('') : '<div class="empty">表示するタスクはありません</div>'}</div>`;
+  }
+
+  function renderCategoryEffort() {
+    const rows = state.categories.map(cat => {
+      const total = activeTasks().filter(task => task.category === cat.id).reduce((sum, task) => sum + remainingEffort(task), 0);
+      return { cat, total };
+    }).filter(row => row.total > 0);
+    if (!rows.length) return '';
+    const max = Math.max(...rows.map(row => row.total), .1);
+    return `<section class="card task-effort-summary">
+      <div class="row-between">
+        <h3>カテゴリ別工数</h3>
+        <span class="tiny">未完了の残工数</span>
+      </div>
+      <div class="task-effort-bars">
+        ${rows.map(({ cat, total }) => `<div class="effort-row">
+          <span class="effort-name"><i style="background:${escapeHTML(cat.color)}"></i>${escapeHTML(cat.label)}</span>
+          <div class="bar"><span style="width:${Math.round(total / max * 100)}%;background:${escapeHTML(cat.color)}"></span></div>
+          <strong>${total.toFixed(1)}h</strong>
+        </div>`).join('')}
+      </div>
+    </section>`;
+  }
+
+  function renderTaskMasterSettings() {
+    return `
+      <div class="notice">
+        タスクで使う「カテゴリ」「担当」「項目」を管理します。追加・編集・削除・並び替えができます。
+      </div>
+      ${renderCategoryMaster()}
+      ${renderOwnerMaster()}
+      ${renderTagMaster()}
+      <div class="card no-print">
+        <h3>既定値をリセット</h3>
+        <p class="muted">カテゴリ・担当・項目を前ツールの初期状態に戻します。タスクや記録は削除されません。</p>
+        <button class="btn danger block" type="button" data-action="reset-task-masters">マスタを初期化</button>
+      </div>`;
+  }
+
+  function renderCategoryMaster() {
+    return `<section class="card master-card">
+      <div class="row-between">
+        <h3>カテゴリ</h3>
+        <span class="tiny">表示名・色・順序</span>
+      </div>
+      <div class="master-list">
+        ${state.categories.map((cat, idx) => `<form id="categoryEditForm-${escapeHTML(cat.id)}" class="master-row" data-id="${escapeHTML(cat.id)}">
+          <button class="swatch-btn" type="button" data-action="focus-color" data-target="catColor-${escapeHTML(cat.id)}" style="background:${escapeHTML(cat.color)}" aria-label="色を変更"></button>
+          <input class="input color-input" id="catColor-${escapeHTML(cat.id)}" name="color" type="color" value="${escapeHTML(cat.color)}" aria-label="カテゴリ色">
+          <input class="input" name="label" required maxlength="24" value="${escapeHTML(cat.label)}" aria-label="カテゴリ名">
+          <div class="row master-actions">
+            <button class="btn small" type="button" data-action="move-category" data-id="${escapeHTML(cat.id)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>↑</button>
+            <button class="btn small" type="button" data-action="move-category" data-id="${escapeHTML(cat.id)}" data-dir="1" ${idx === state.categories.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="btn small" type="submit">保存</button>
+            <button class="btn small danger" type="button" data-action="delete-category" data-id="${escapeHTML(cat.id)}">削除</button>
+          </div>
+        </form>`).join('')}
+      </div>
+      <form id="categoryForm" class="master-add no-print">
+        <input class="input" name="label" required maxlength="24" placeholder="新しいカテゴリ名">
+        <input class="input color-input" name="color" type="color" value="#1D9E75" aria-label="新しいカテゴリ色">
+        <button class="btn primary" type="submit">追加</button>
+      </form>
+    </section>`;
+  }
+
+  function renderOwnerMaster() {
+    return `<section class="card master-card">
+      <div class="row-between">
+        <h3>担当</h3>
+        <span class="tiny">名称・順序</span>
+      </div>
+      <div class="master-list">
+        ${state.owners.map((owner, idx) => `<form id="ownerEditForm-${idx}" class="master-row simple" data-value="${escapeHTML(owner)}">
+          <input class="input" name="name" required maxlength="24" value="${escapeHTML(owner)}" aria-label="担当名">
+          <div class="row master-actions">
+            <button class="btn small" type="button" data-action="move-owner" data-value="${escapeHTML(owner)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>↑</button>
+            <button class="btn small" type="button" data-action="move-owner" data-value="${escapeHTML(owner)}" data-dir="1" ${idx === state.owners.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="btn small" type="submit">保存</button>
+            <button class="btn small danger" type="button" data-action="delete-owner" data-value="${escapeHTML(owner)}">削除</button>
+          </div>
+        </form>`).join('')}
+      </div>
+      <form id="ownerForm" class="master-add simple no-print">
+        <input class="input" name="name" required maxlength="24" placeholder="新しい担当者名">
+        <button class="btn primary" type="submit">追加</button>
+      </form>
+    </section>`;
+  }
+
+  function renderTagMaster() {
+    return `<section class="card master-card">
+      <div class="row-between">
+        <h3>項目</h3>
+        <span class="tiny">タグ・順序</span>
+      </div>
+      <div class="master-list">
+        ${state.tags.map((tag, idx) => `<form id="tagEditForm-${idx}" class="master-row simple" data-value="${escapeHTML(tag)}">
+          <input class="input" name="name" required maxlength="24" value="${escapeHTML(tag)}" aria-label="項目名">
+          <div class="row master-actions">
+            <button class="btn small" type="button" data-action="move-tag" data-value="${escapeHTML(tag)}" data-dir="-1" ${idx === 0 ? 'disabled' : ''}>↑</button>
+            <button class="btn small" type="button" data-action="move-tag" data-value="${escapeHTML(tag)}" data-dir="1" ${idx === state.tags.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="btn small" type="submit">保存</button>
+            <button class="btn small danger" type="button" data-action="delete-tag" data-value="${escapeHTML(tag)}">削除</button>
+          </div>
+        </form>`).join('')}
+      </div>
+      <form id="tagForm" class="master-add simple no-print">
+        <input class="input" name="name" required maxlength="24" placeholder="新しい項目名">
+        <button class="btn primary" type="submit">追加</button>
+      </form>
+    </section>`;
   }
 
   function renderWBSPanel() {
@@ -747,7 +946,7 @@
 
   function filteredTasks() {
     if (taskFilter === 'self') return activeTasks().filter(task => (task.owners || []).includes('自分'));
-    if (taskFilter === 'delegated') return activeTasks().filter(task => !(task.owners || []).includes('自分'));
+    if (taskFilter === 'del') return activeTasks().filter(task => !(task.owners || []).includes('自分'));
     if (taskFilter === 'done') return state.tasks.filter(t => t.status === 'done');
     return activeTasks();
   }
@@ -827,45 +1026,97 @@
 
   function taskCard(task) {
     const cat = categoryOf(task.category);
+    const idx = state.tasks.findIndex(item => item.id === task.id);
     const due = task.end ? dayDiff(task.end, TODAY()) : null;
-    const dueBadge = due == null ? '' : due < 0 ? `<span class="badge red">${Math.abs(due)}日超過</span>` : due === 0 ? '<span class="badge red">今日まで</span>' : due <= 3 ? `<span class="badge">${due}日後</span>` : '';
+    const dueBadge = due == null ? '' : due < 0 ? `<span class="badge red">${Math.abs(due)}日超過</span>` : due === 0 ? '<span class="badge red">今日まで</span>' : due <= 3 ? `<span class="badge">${due}日後</span>` : `<span class="badge">${due}日後</span>`;
+    const period = task.start || task.end ? `${fmtDate(task.start) || '未定'} - ${fmtDate(task.end) || '未定'}` : '';
+    const progress = clamp(task.progress, 0, 100);
+    const progressTone = progress >= 100 ? 'var(--text-soft)' : progress >= 60 ? 'var(--accent)' : progress >= 30 ? 'var(--amber)' : 'var(--blue)';
+    const statusLabel = { todo: '未着手', doing: '進行中', done: '完了' }[task.status] || '未着手';
     return `
-      <article class="task-item" data-task-id="${task.id}">
-        <div class="row-between">
-          <div class="task-title">${escapeHTML(task.title)}</div>
-          <span class="badge" style="background:${escapeHTML(cat.color)}22;color:${escapeHTML(cat.color)}">${escapeHTML(cat.label)}</span>
+      <article class="task-item legacy-task" data-task-id="${task.id}">
+        <div class="task-order no-print">
+          <button class="btn small" type="button" data-action="move-task" data-id="${task.id}" data-dir="-1" ${idx <= 0 ? 'disabled' : ''} aria-label="上へ">↑</button>
+          <button class="btn small" type="button" data-action="move-task" data-id="${task.id}" data-dir="1" ${idx === state.tasks.length - 1 ? 'disabled' : ''} aria-label="下へ">↓</button>
         </div>
-        <div class="task-meta">
-          ${task.urgent ? '<span class="badge red">緊急</span>' : ''}
-          ${task.important ? '<span class="badge blue">重要</span>' : ''}
-          ${task.value_area ? `<span class="badge green">${escapeHTML(task.value_area)}</span>` : ''}
-          ${dueBadge}
-          <span class="badge">${remainingEffort(task).toFixed(1)}h / ${Number(task.effort).toFixed(1)}h</span>
-          ${(task.owners || []).map(owner => `<span class="badge">担当:${escapeHTML(owner)}</span>`).join('')}
-          ${(task.tags || []).map(tag => `<span class="badge">項目:${escapeHTML(tag)}</span>`).join('')}
+        <div class="legacy-task-body">
+          <div class="row-between">
+            <div class="task-title" style="${task.status === 'done' ? 'text-decoration:line-through;opacity:.55' : ''}">${escapeHTML(task.title)}</div>
+            <span class="badge" style="background:${escapeHTML(cat.color)}22;color:${escapeHTML(cat.color)}">${escapeHTML(cat.label)}</span>
+          </div>
+          <div class="task-meta">
+            <span class="badge">${escapeHTML(statusLabel)}</span>
+            ${task.urgent ? '<span class="badge red">緊急</span>' : ''}
+            ${task.important ? '<span class="badge blue">重要</span>' : ''}
+            ${task.value_area ? `<span class="badge green">${escapeHTML(task.value_area)}</span>` : ''}
+            ${dueBadge}
+            <span class="badge">残 ${remainingEffort(task).toFixed(1)}h / ${Number(task.effort).toFixed(1)}h${progress > 0 ? ` / 完 ${doneEffort(task).toFixed(1)}h` : ''}</span>
+            ${(task.owners || []).map(owner => `<span class="badge">担当:${escapeHTML(owner)}</span>`).join('')}
+            ${(task.tags || []).map(tag => `<span class="badge">項目:${escapeHTML(tag)}</span>`).join('')}
+          </div>
+          ${period ? `<div class="tiny task-period">${escapeHTML(period)}</div>` : ''}
+          ${task.next_step ? `<p class="tiny">次の一手：${escapeHTML(task.next_step)}</p>` : ''}
+          <div class="row">
+            <div class="bar" style="flex:1"><span style="width:${progress}%;background:${progressTone}"></span></div>
+            <span class="tiny" style="min-width:42px;text-align:right;color:${progressTone}">${progress}%</span>
+          </div>
         </div>
-        ${task.next_step ? `<p class="tiny">次の一手：${escapeHTML(task.next_step)}</p>` : ''}
-        <div class="row">
-          <div class="bar" style="flex:1"><span style="width:${clamp(task.progress, 0, 100)}%"></span></div>
-          <span class="tiny" style="min-width:42px;text-align:right">${clamp(task.progress, 0, 100)}%</span>
-        </div>
-        <div class="row wrap no-print">
-          <select class="select" style="width:auto;min-height:38px" data-action="task-status" data-id="${task.id}" aria-label="ステータス">
+        <div class="task-actions no-print">
+          <select class="select" data-action="task-status" data-id="${task.id}" aria-label="ステータス">
             <option value="todo" ${task.status === 'todo' ? 'selected' : ''}>未着手</option>
             <option value="doing" ${task.status === 'doing' ? 'selected' : ''}>進行中</option>
             <option value="done" ${task.status === 'done' ? 'selected' : ''}>完了</option>
           </select>
-          <input class="input" style="width:128px;min-height:38px" type="range" min="0" max="100" step="5" value="${clamp(task.progress, 0, 100)}" data-action="task-progress" data-id="${task.id}" aria-label="進捗">
+          <button class="btn small" type="button" data-action="task-panel" data-id="${task.id}" data-panel="progress">進捗</button>
+          <button class="btn small" type="button" data-action="task-panel" data-id="${task.id}" data-panel="effort">工数</button>
+          <button class="btn small" type="button" data-action="task-panel" data-id="${task.id}" data-panel="dates">期間</button>
+          <button class="btn small" type="button" data-action="task-panel" data-id="${task.id}" data-panel="flags">フラグ</button>
+          <button class="btn small" type="button" data-action="task-panel" data-id="${task.id}" data-panel="full">全編集</button>
           <button class="btn small danger" type="button" data-action="delete-task" data-id="${task.id}">削除</button>
         </div>
-        <details class="task-edit no-print">
-          <summary>編集</summary>
-          <form id="taskEditForm-${task.id}" data-task-id="${task.id}" style="margin-top:12px">
-            ${taskEditFields(task, `edit_${task.id}`)}
-            <button class="btn primary block" type="submit">変更を保存</button>
-          </form>
-        </details>
+        ${renderTaskInlineEditor(task)}
       </article>`;
+  }
+
+  function renderTaskInlineEditor(task) {
+    if (!taskInlineEditor || taskInlineEditor.id !== task.id) return '';
+    const panel = taskInlineEditor.panel;
+    if (panel === 'progress') {
+      return `<form id="taskProgressForm-${task.id}" class="task-inline-edit no-print" data-task-id="${task.id}">
+        <label>進捗率 <strong>${clamp(task.progress, 0, 100)}%</strong></label>
+        <input class="input" name="progress" type="range" min="0" max="100" step="5" value="${clamp(task.progress, 0, 100)}">
+        <button class="btn primary" type="submit">進捗を保存</button>
+      </form>`;
+    }
+    if (panel === 'effort') {
+      return `<form id="taskEffortForm-${task.id}" class="task-inline-edit no-print" data-task-id="${task.id}">
+        <label for="taskEffort-${task.id}">工数(h)</label>
+        <input class="input" id="taskEffort-${task.id}" name="effort" type="number" min="0.1" max="80" step="0.1" value="${Number(task.effort || 1).toFixed(1)}">
+        <button class="btn primary" type="submit">工数を保存</button>
+      </form>`;
+    }
+    if (panel === 'dates') {
+      return `<form id="taskDatesForm-${task.id}" class="task-inline-edit no-print" data-task-id="${task.id}">
+        <div class="grid-2">
+          <div class="field"><label for="taskStart-${task.id}">開始日</label><input class="input" id="taskStart-${task.id}" name="start" type="date" value="${escapeHTML(task.start || '')}"></div>
+          <div class="field"><label for="taskEnd-${task.id}">終了日</label><input class="input" id="taskEnd-${task.id}" name="end" type="date" value="${escapeHTML(task.end || '')}"></div>
+        </div>
+        <button class="btn primary" type="submit">期間を保存</button>
+      </form>`;
+    }
+    if (panel === 'flags') {
+      return `<form id="taskFlagsForm-${task.id}" class="task-inline-edit no-print" data-task-id="${task.id}">
+        <div class="grid-2">
+          <label class="chip"><input type="checkbox" name="urgent" ${task.urgent ? 'checked' : ''} style="margin-right:6px">緊急</label>
+          <label class="chip"><input type="checkbox" name="important" ${task.important ? 'checked' : ''} style="margin-right:6px">重要</label>
+        </div>
+        <button class="btn primary" type="submit">フラグを保存</button>
+      </form>`;
+    }
+    return `<form id="taskEditForm-${task.id}" class="task-inline-edit no-print" data-task-id="${task.id}">
+      ${taskEditFields(task, `edit_${task.id}`)}
+      <button class="btn primary block" type="submit">変更を保存</button>
+    </form>`;
   }
 
   function renderWBS() {
@@ -1031,9 +1282,27 @@
         <div class="row-between">
           <div>
             <h3>ストレスマトリクス</h3>
-            <p class="muted">場所×部位で記録します。5=非常に良い、1=非常に悪い。2以下はケア優先サインです。</p>
+            <p class="muted">セルを選び、下の入力ドックで記録します。5=非常に良い、1=非常に悪い。2以下はケア優先サインです。</p>
           </div>
           <span class="badge ${stressCareCount() ? 'red' : 'green'}">ケア優先 ${stressCareCount()}件</span>
+        </div>
+        <div class="stress-dock no-print" id="stressCellEditor" role="region" aria-label="ストレス入力">
+          <div class="stress-dock-head">
+            <div>
+              <strong>${escapeHTML(selectedLoc?.label || '')} × ${escapeHTML(selectedArea?.label || '')}</strong>
+              <span>${selectedData.score} / ${STRESS_LABELS[selectedData.score]}</span>
+            </div>
+            <button class="btn small primary" type="button" data-action="stress-save">保存</button>
+          </div>
+          <div class="score-choice-row compact">
+            ${[5, 4, 3, 2, 1].map(score => `<button class="score-choice ${Number(selectedData.score) === score ? 'active' : ''}" type="button" data-action="stress-score" data-score="${score}">
+              <strong>${score}</strong><span>${STRESS_LABELS[score]}</span>
+            </button>`).join('')}
+          </div>
+          <details class="stress-note-toggle">
+            <summary>メモ（任意）</summary>
+            <textarea class="textarea" id="stressCellNote" maxlength="500">${escapeHTML(selectedData.note || '')}</textarea>
+          </details>
         </div>
         <div class="stress-matrix-mobile">
           ${state.stress_locations.map(loc => {
@@ -1058,20 +1327,6 @@
             </section>`;
           }).join('')}
         </div>
-      </div>
-
-      <div class="card no-print" id="stressCellEditor">
-        <h3>${escapeHTML(selectedLoc?.label || '')} × ${escapeHTML(selectedArea?.label || '')}</h3>
-        <div class="score-choice-row">
-          ${[5, 4, 3, 2, 1].map(score => `<button class="score-choice ${Number(selectedData.score) === score ? 'active' : ''}" type="button" data-action="stress-score" data-score="${score}">
-            <strong>${score}</strong><span>${STRESS_LABELS[score]}</span>
-          </button>`).join('')}
-        </div>
-        <div class="field" style="margin-top:12px">
-          <label for="stressCellNote">メモ（任意）</label>
-          <textarea class="textarea" id="stressCellNote" maxlength="500">${escapeHTML(selectedData.note || '')}</textarea>
-        </div>
-        <button class="btn primary block" type="button" data-action="stress-save">このセルを保存</button>
       </div>
     `;
   }
@@ -1212,38 +1467,12 @@
         <button class="btn primary block" type="submit">設定を保存</button>
       </form>
 
-      <h2>カテゴリ</h2>
-      <div class="stack">
-        ${state.categories.map(c => `<div class="card row-between"><span class="row"><span class="badge" style="background:${escapeHTML(c.color)}22;color:${escapeHTML(c.color)}">${escapeHTML(c.label)}</span><span class="tiny">${escapeHTML(c.id)}</span></span><button class="btn small danger" type="button" data-action="delete-category" data-id="${escapeHTML(c.id)}">削除</button></div>`).join('')}
+      <h2>タスク設定</h2>
+      <div class="card">
+        <h3>カテゴリ・担当・項目</h3>
+        <p class="muted">タスクで使うマスタは、タスク画面の「設定」に集約しました。編集・削除・並び替え・初期化ができます。</p>
+        <button class="btn block" type="button" data-action="open-task-settings">タスク設定を開く</button>
       </div>
-      <form id="categoryForm" class="card" style="margin-top:12px">
-        <h3>カテゴリを追加</h3>
-        <div class="grid-2">
-          <div class="field"><label for="catLabel">表示名</label><input class="input" id="catLabel" name="label" required maxlength="24"></div>
-          <div class="field"><label for="catColor">色</label><input class="input" id="catColor" name="color" type="color" value="#227a5a"></div>
-        </div>
-        <button class="btn block" type="submit">追加</button>
-      </form>
-
-      <h2>担当</h2>
-      <div class="stack">
-        ${state.owners.map(owner => `<div class="card row-between"><span>${escapeHTML(owner)}</span><button class="btn small danger" type="button" data-action="delete-owner" data-value="${escapeHTML(owner)}">削除</button></div>`).join('')}
-      </div>
-      <form id="ownerForm" class="card" style="margin-top:12px">
-        <h3>担当を追加</h3>
-        <div class="field"><label for="ownerName">担当名</label><input class="input" id="ownerName" name="name" required maxlength="24"></div>
-        <button class="btn block" type="submit">追加</button>
-      </form>
-
-      <h2>項目</h2>
-      <div class="stack">
-        ${state.tags.map(tag => `<div class="card row-between"><span>${escapeHTML(tag)}</span><button class="btn small danger" type="button" data-action="delete-tag" data-value="${escapeHTML(tag)}">削除</button></div>`).join('')}
-      </div>
-      <form id="tagForm" class="card" style="margin-top:12px">
-        <h3>項目を追加</h3>
-        <div class="field"><label for="tagName">項目名</label><input class="input" id="tagName" name="name" required maxlength="24"></div>
-        <button class="btn block" type="submit">追加</button>
-      </form>
 
       <h2>ストレス場所</h2>
       <div class="stack">
@@ -1270,6 +1499,28 @@
     return `
       ${topbar('データ管理', 'settings')}
       <div class="card">
+        <div class="row-between gas-head">
+          <div>
+            <h3>Google スプレッドシート連携</h3>
+            <p class="muted">GAS Web App の URL を設定すると、保存時に自動同期し、手動で読み込み・送信もできます。</p>
+          </div>
+          <span class="sync-pill ${escapeHTML(syncState)}"><span id="syncDot" class="sync-dot ${escapeHTML(syncState)}"></span><span id="syncText">${escapeHTML(syncMessage)}</span></span>
+        </div>
+        <form id="gasForm" class="gas-form no-print">
+          <div class="field">
+            <label for="gasUrlInput">GAS Web App URL</label>
+            <input class="input" id="gasUrlInput" name="gas_url" inputmode="url" value="${escapeHTML(gasUrl)}" placeholder="https://script.google.com/macros/s/.../exec">
+          </div>
+          <div class="row wrap">
+            <button class="btn primary" type="submit">URLを保存</button>
+            <button class="btn" type="button" data-action="force-sync-sheets">今すぐ Sheets へ保存</button>
+            <button class="btn" type="button" data-action="reload-sheets">Sheets から再読み込み</button>
+            <button class="btn danger" type="button" data-action="clear-gas-url">クリア</button>
+          </div>
+        </form>
+        <p id="gasStatusMsg" class="tiny ${gasMessageIsError ? 'danger-text' : ''}">${escapeHTML(gasMessage)}</p>
+      </div>
+      <div class="card">
         <h3>JSONを読み込む</h3>
         <form id="importForm">
           <div class="field">
@@ -1291,16 +1542,25 @@
     if (!(form instanceof HTMLFormElement)) return;
     event.preventDefault();
     if (form.id === 'checkinForm') saveCheckin(form);
+    if (form.id === 'taskCapacityForm') saveTaskCapacity(form);
     if (form.id === 'taskForm') saveTask(form);
     if (form.id.startsWith('taskEditForm-')) saveTaskEdit(form);
+    if (form.id.startsWith('taskProgressForm-')) saveTaskProgress(form);
+    if (form.id.startsWith('taskEffortForm-')) saveTaskEffort(form);
+    if (form.id.startsWith('taskDatesForm-')) saveTaskDates(form);
+    if (form.id.startsWith('taskFlagsForm-')) saveTaskFlags(form);
     if (form.id === 'stressForm') saveStress(form);
     if (form.id === 'workForm') saveWork(form);
     if (form.id === 'scaleForm') saveScale(form);
     if (form.id === 'settingsForm') saveSettings(form);
     if (form.id === 'categoryForm') saveCategory(form);
+    if (form.id.startsWith('categoryEditForm-')) saveCategoryEdit(form);
     if (form.id === 'ownerForm') saveOwner(form);
+    if (form.id.startsWith('ownerEditForm-')) saveOwnerEdit(form);
     if (form.id === 'tagForm') saveTag(form);
+    if (form.id.startsWith('tagEditForm-')) saveTagEdit(form);
     if (form.id === 'stressLocationForm') saveStressLocation(form);
+    if (form.id === 'gasForm') saveGasUrl(form);
     if (form.id === 'importForm') importJSON(form);
   }
 
@@ -1333,6 +1593,16 @@
     setRoute('home');
   }
 
+  function saveTaskCapacity(form) {
+    const data = formData(form);
+    state.settings.daily_capacity = Math.round(Math.max(.1, Number(data.daily_capacity) || 8) * 10) / 10;
+    state.settings.weekly_capacity = Math.round(Math.max(.1, Number(data.weekly_capacity) || 40) * 10) / 10;
+    saveState();
+    toast('キャパシティを保存しました');
+    taskSection = 'manage';
+    setRoute('tasks');
+  }
+
   function saveTask(form) {
     const payload = readTaskPayload(form, {});
     if (!payload) return;
@@ -1344,6 +1614,8 @@
     });
     saveState();
     toast('タスクを追加しました');
+    taskInlineEditor = null;
+    taskSection = 'manage';
     setRoute('tasks');
   }
 
@@ -1355,6 +1627,63 @@
     Object.assign(task, payload, { updated_at: NOW() });
     saveState();
     toast('タスクを更新しました');
+    taskInlineEditor = null;
+    taskSection = 'manage';
+    setRoute('tasks');
+  }
+
+  function saveTaskProgress(form) {
+    const task = state.tasks.find(item => item.id === Number(form.dataset.taskId));
+    if (!task) return;
+    const progress = clamp(formData(form).progress, 0, 100);
+    task.progress = progress;
+    if (progress >= 100) task.status = 'done';
+    task.updated_at = NOW();
+    saveState();
+    toast('進捗を保存しました');
+    taskInlineEditor = null;
+    setRoute('tasks');
+  }
+
+  function saveTaskEffort(form) {
+    const task = state.tasks.find(item => item.id === Number(form.dataset.taskId));
+    if (!task) return;
+    const effort = Math.round(Math.max(.1, Number(formData(form).effort) || 1) * 10) / 10;
+    task.effort = effort;
+    task.updated_at = NOW();
+    saveState();
+    toast('工数を保存しました');
+    taskInlineEditor = null;
+    setRoute('tasks');
+  }
+
+  function saveTaskDates(form) {
+    const task = state.tasks.find(item => item.id === Number(form.dataset.taskId));
+    if (!task) return;
+    const data = formData(form);
+    if (data.start && data.end && data.start > data.end) {
+      toast('開始日が終了日より後です');
+      return;
+    }
+    task.start = data.start || '';
+    task.end = data.end || '';
+    task.updated_at = NOW();
+    saveState();
+    toast('期間を保存しました');
+    taskInlineEditor = null;
+    setRoute('tasks');
+  }
+
+  function saveTaskFlags(form) {
+    const task = state.tasks.find(item => item.id === Number(form.dataset.taskId));
+    if (!task) return;
+    const data = formData(form);
+    task.urgent = Boolean(data.urgent);
+    task.important = Boolean(data.important);
+    task.updated_at = NOW();
+    saveState();
+    toast('フラグを保存しました');
+    taskInlineEditor = null;
     setRoute('tasks');
   }
 
@@ -1429,7 +1758,6 @@
   function selectStressCell(locId, areaId) {
     selectedStressCell = { locId, areaId };
     render();
-    setTimeout(() => byId('stressCellEditor')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 0);
   }
 
   function setSelectedStressScore(target) {
@@ -1550,14 +1878,29 @@
     const data = formData(form);
     const label = String(data.label || '').trim();
     if (!label) return;
-    const base = label.toLowerCase().replace(/\s+/g, '_').replace(/[^\w一-龥ぁ-んァ-ンー]/g, '').slice(0, 20) || `cat_${Date.now()}`;
-    let id = base;
-    let n = 2;
-    while (state.categories.some(c => c.id === id)) id = `${base}_${n++}`;
+    const id = uniqueCategoryId(label);
     state.categories.push({ id, label, color: data.color || '#227a5a' });
     saveState();
     toast('カテゴリを追加しました');
-    setRoute('settings');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
+  }
+
+  function saveCategoryEdit(form) {
+    const category = state.categories.find(item => item.id === form.dataset.id);
+    if (!category) return;
+    const data = formData(form);
+    const label = String(data.label || '').trim();
+    if (!label) {
+      toast('カテゴリ名を入力してください');
+      return;
+    }
+    category.label = label;
+    if (/^#[0-9a-f]{6}$/i.test(String(data.color || ''))) category.color = data.color;
+    saveState();
+    toast('カテゴリを保存しました');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
   }
 
   function saveOwner(form) {
@@ -1566,7 +1909,31 @@
     if (!state.owners.includes(name)) state.owners.push(name);
     saveState();
     toast('担当を追加しました');
-    setRoute('settings');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
+  }
+
+  function saveOwnerEdit(form) {
+    const oldName = form.dataset.value;
+    const nextName = String(formData(form).name || '').trim();
+    if (!nextName) {
+      toast('担当名を入力してください');
+      return;
+    }
+    if (state.owners.some(name => name === nextName && name !== oldName)) {
+      toast('同名の担当があります');
+      return;
+    }
+    const idx = state.owners.indexOf(oldName);
+    if (idx < 0) return;
+    state.owners[idx] = nextName;
+    state.tasks.forEach(task => {
+      task.owners = (task.owners || []).map(name => name === oldName ? nextName : name);
+    });
+    saveState();
+    toast('担当を保存しました');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
   }
 
   function saveTag(form) {
@@ -1575,7 +1942,31 @@
     if (!state.tags.includes(name)) state.tags.push(name);
     saveState();
     toast('項目を追加しました');
-    setRoute('settings');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
+  }
+
+  function saveTagEdit(form) {
+    const oldName = form.dataset.value;
+    const nextName = String(formData(form).name || '').trim();
+    if (!nextName) {
+      toast('項目名を入力してください');
+      return;
+    }
+    if (state.tags.some(name => name === nextName && name !== oldName)) {
+      toast('同名の項目があります');
+      return;
+    }
+    const idx = state.tags.indexOf(oldName);
+    if (idx < 0) return;
+    state.tags[idx] = nextName;
+    state.tasks.forEach(task => {
+      task.tags = (task.tags || []).map(name => name === oldName ? nextName : name);
+    });
+    saveState();
+    toast('項目を保存しました');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
   }
 
   function saveStressLocation(form) {
@@ -1607,6 +1998,262 @@
       setRoute('home');
     } catch (error) {
       toast('JSONを読み込めませんでした');
+    }
+  }
+
+  function loadGasUrlValue() {
+    try {
+      const stored = localStorage.getItem(GAS_URL_KEY) || localStorage.getItem('csm_gas_url') || '';
+      return normalizeGasUrl(stored) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function normalizeGasUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    const clean = raw.split('#')[0].split('?')[0].trim();
+    const valid = /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/(exec|dev)$/.test(clean);
+    if (!valid) return null;
+    return clean.replace(/\/dev$/, '/exec');
+  }
+
+  function saveGasUrl(form) {
+    const raw = String(formData(form).gas_url || '').trim();
+    const normalized = normalizeGasUrl(raw);
+    if (normalized === null) {
+      setGasStatus('URL が正しくありません。GAS Web App の /macros/s/.../exec URL を入力してください。', true);
+      return;
+    }
+    gasUrl = normalized;
+    try {
+      if (gasUrl) localStorage.setItem(GAS_URL_KEY, gasUrl);
+      else localStorage.removeItem(GAS_URL_KEY);
+    } catch {}
+    setSyncStatus('idle', gasUrl ? 'Sheets設定済み' : 'Sheets未設定');
+    setGasStatus(gasUrl ? 'URLを保存しました。今すぐ Sheets へ保存できます。' : 'URLをクリアしました。', false);
+    render();
+  }
+
+  function clearGasUrl() {
+    gasUrl = '';
+    try { localStorage.removeItem(GAS_URL_KEY); } catch {}
+    setSyncStatus('idle', 'Sheets未設定');
+    setGasStatus('Sheets連携を解除しました。', false);
+    render();
+  }
+
+  function makeGasUrlWithQuery(params) {
+    if (!gasUrl) return '';
+    const qs = new URLSearchParams(params || {});
+    return `${gasUrl}${gasUrl.includes('?') ? '&' : '?'}${qs.toString()}`;
+  }
+
+  function setSyncStatus(nextState, message) {
+    syncState = nextState;
+    syncMessage = message || ({ idle: gasUrl ? 'Sheets設定済み' : 'Sheets未設定', loading: '読み込み中...', syncing: '同期中...', synced: '同期済み', error: '同期失敗' }[nextState] || nextState);
+    const dot = byId('syncDot');
+    const text = byId('syncText');
+    if (dot) dot.className = `sync-dot ${nextState}`;
+    if (text) text.textContent = syncMessage;
+  }
+
+  function setGasStatus(message, isError = false) {
+    gasMessage = message;
+    gasMessageIsError = Boolean(isError);
+    const el = byId('gasStatusMsg');
+    if (el) {
+      el.textContent = message;
+      el.classList.toggle('danger-text', gasMessageIsError);
+    }
+  }
+
+  function scheduleSheetsSync() {
+    if (!gasUrl) return;
+    if (syncTimer) clearTimeout(syncTimer);
+    setSyncStatus('syncing', '同期待機中...');
+    syncTimer = setTimeout(() => syncToSheets(true), 1500);
+  }
+
+  function buildSheetsPayload() {
+    return {
+      ...state,
+      schema_version: state.schema_version || 1,
+      synced_at: NOW()
+    };
+  }
+
+  function pingGasByImage() {
+    if (!gasUrl) return;
+    try {
+      const img = new Image();
+      img.style.display = 'none';
+      img.onload = img.onerror = () => setTimeout(() => img.remove(), 500);
+      document.body.appendChild(img);
+      img.src = makeGasUrlWithQuery({ action: 'ping', ts: Date.now() });
+    } catch {}
+  }
+
+  function submitToGasByHiddenForm(payload) {
+    return new Promise((resolve, reject) => {
+      try {
+        const frameName = 'act_compass_gas_post_frame';
+        let frame = byId(frameName);
+        if (!frame) {
+          frame = document.createElement('iframe');
+          frame.name = frameName;
+          frame.id = frameName;
+          frame.style.display = 'none';
+          frame.setAttribute('aria-hidden', 'true');
+          document.body.appendChild(frame);
+        }
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = gasUrl;
+        form.target = frameName;
+        form.style.display = 'none';
+        form.acceptCharset = 'UTF-8';
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'payload';
+        input.value = payload;
+        form.appendChild(input);
+        const clientTs = document.createElement('input');
+        clientTs.type = 'hidden';
+        clientTs.name = 'clientTs';
+        clientTs.value = NOW();
+        form.appendChild(clientTs);
+        document.body.appendChild(form);
+        form.submit();
+        setTimeout(() => {
+          form.remove();
+          resolve(true);
+        }, 1200);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  async function syncToSheets(silent = false) {
+    if (!gasUrl || isSyncing) return false;
+    isSyncing = true;
+    if (!silent) setSyncStatus('syncing');
+    try {
+      pingGasByImage();
+      await submitToGasByHiddenForm(JSON.stringify(buildSheetsPayload()));
+      setSyncStatus('synced', '送信完了');
+      if (!silent) setGasStatus('スプレッドシートへ送信しました。', false);
+      return true;
+    } catch (error) {
+      console.warn('Sheets sync failed:', error);
+      setSyncStatus('error', '送信失敗');
+      if (!silent) setGasStatus('スプレッドシートへの送信に失敗しました。URL・デプロイ設定を確認してください。', true);
+      return false;
+    } finally {
+      isSyncing = false;
+    }
+  }
+
+  function loadFromSheetsByJsonp() {
+    return new Promise(resolve => {
+      if (!gasUrl) {
+        resolve({ data: null, reason: 'gasUrl未設定' });
+        return;
+      }
+      const callbackName = `actCompassSheetLoad_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      let done = false;
+      const cleanup = () => {
+        if (done) return;
+        done = true;
+        try { delete window[callbackName]; } catch { window[callbackName] = undefined; }
+        script.remove();
+      };
+      window[callbackName] = data => {
+        cleanup();
+        if (!data) {
+          resolve({ data: null, reason: 'コールバック応答が空です' });
+          return;
+        }
+        if (data.error || data.success === false) {
+          resolve({ data: null, reason: data.error || JSON.stringify(data).slice(0, 200) });
+          return;
+        }
+        resolve({ data, reason: '' });
+      };
+      script.onerror = () => {
+        cleanup();
+        resolve({ data: null, reason: 'JSONPスクリプトのロードに失敗しました' });
+      };
+      script.src = makeGasUrlWithQuery({ action: 'load', callback: callbackName, ts: Date.now() });
+      document.body.appendChild(script);
+      setTimeout(() => {
+        if (!done) {
+          cleanup();
+          resolve({ data: null, reason: 'JSONPタイムアウト' });
+        }
+      }, 10000);
+    });
+  }
+
+  async function reloadFromSheets() {
+    if (!gasUrl) {
+      setGasStatus('先に GAS URL を設定してください。', true);
+      render();
+      return;
+    }
+    setSyncStatus('loading');
+    setGasStatus('スプレッドシートから読み込んでいます...', false);
+    const result = await loadFromSheetsByJsonp();
+    if (!result.data) {
+      setSyncStatus('error', '読み込み失敗');
+      setGasStatus(`読み込みに失敗しました。URL・デプロイ設定を確認してください。${result.reason ? ` 理由: ${result.reason}` : ''}`, true);
+      render();
+      return;
+    }
+    try {
+      state = normalizeImportedData(result.data);
+      saveState({ skipSync: true });
+      taskInlineEditor = null;
+      selectedStressCell = null;
+      setSyncStatus('synced', '読み込み完了');
+      setGasStatus('スプレッドシートからデータを読み込みました。', false);
+      setRoute('home');
+    } catch (error) {
+      setSyncStatus('error', '読み込み失敗');
+      setGasStatus('読み込んだJSONを統合版データとして解釈できませんでした。', true);
+      render();
+    }
+  }
+
+  async function forceSyncToSheets() {
+    if (!gasUrl) {
+      setGasStatus('先に GAS URL を設定してください。', true);
+      render();
+      return;
+    }
+    await syncToSheets(false);
+    render();
+  }
+
+  async function loadFromSheetsOnStartup() {
+    if (!gasUrl) return;
+    setSyncStatus('loading');
+    const result = await loadFromSheetsByJsonp();
+    if (!result.data) {
+      setSyncStatus('idle', 'Sheets設定済み');
+      return;
+    }
+    try {
+      state = normalizeImportedData(result.data);
+      saveState({ skipSync: true });
+      setSyncStatus('synced', '同期済み');
+      render();
+    } catch {
+      setSyncStatus('error', '読み込み失敗');
+      render();
     }
   }
 
@@ -1672,13 +2319,11 @@
     if (data.settings?.weekly !== undefined) next.settings.weekly_capacity = Number(data.settings.weekly) || 40;
 
     const masters = data.masters || data.catalogs || data.settings?.catalogs || {};
-    next.categories = normalizeCategories(masters.categories || CATEGORY_DEFAULTS);
+    const categorySet = normalizeCategorySet(masters.categories || CATEGORY_DEFAULTS);
+    next.categories = categorySet.categories;
     next.owners = normalizeStringList(masters.owners, OWNER_DEFAULTS);
     next.tags = normalizeStringList(masters.tags, TAG_DEFAULTS);
-    const categoryMap = new Map((masters.categories || []).map((cat, idx) => [
-      String(cat.key || cat.id || cat.label || idx),
-      safeId(cat.id || cat.key || cat.label || `category_${idx + 1}`, `category_${idx + 1}`)
-    ]));
+    const categoryMap = categorySet.aliases;
     next.tasks = (Array.isArray(data.tasks) ? data.tasks : []).map((task, idx) => normalizeTask({
       ...task,
       category: categoryMap.get(String(task.category)) || task.category,
@@ -1812,9 +2457,22 @@
       render();
     }
     if (action === 'task-section') {
-      taskSection = target.dataset.section || 'tasks';
+      taskSection = target.dataset.section || 'manage';
+      taskInlineEditor = null;
       render();
     }
+    if (action === 'open-task-settings') {
+      taskSection = 'masters';
+      taskInlineEditor = null;
+      setRoute('tasks');
+    }
+    if (action === 'task-panel') {
+      const id = Number(target.dataset.id);
+      const panel = target.dataset.panel || 'full';
+      taskInlineEditor = taskInlineEditor?.id === id && taskInlineEditor?.panel === panel ? null : { id, panel };
+      render();
+    }
+    if (action === 'move-task') moveTask(Number(target.dataset.id), Number(target.dataset.dir));
     if (action === 'wbs-mode') {
       wbsMode = target.dataset.mode || 'list';
       render();
@@ -1822,6 +2480,7 @@
     if (action === 'delete-task') {
       const id = Number(target.dataset.id);
       state.tasks = state.tasks.filter(t => t.id !== id);
+      if (taskInlineEditor?.id === id) taskInlineEditor = null;
       saveState();
       render();
     }
@@ -1842,6 +2501,14 @@
       render();
     }
     if (action === 'export-json') exportJSON();
+    if (action === 'clear-gas-url') clearGasUrl();
+    if (action === 'reload-sheets') reloadFromSheets();
+    if (action === 'force-sync-sheets') forceSyncToSheets();
+    if (action === 'focus-color') byId(target.dataset.target)?.click();
+    if (action === 'move-category') moveCategory(target.dataset.id, Number(target.dataset.dir));
+    if (action === 'move-owner') moveOwner(target.dataset.value, Number(target.dataset.dir));
+    if (action === 'move-tag') moveTag(target.dataset.value, Number(target.dataset.dir));
+    if (action === 'reset-task-masters') resetTaskMasters();
     if (action === 'delete-category') deleteCategory(target.dataset.id);
     if (action === 'delete-owner') deleteOwner(target.dataset.value);
     if (action === 'delete-tag') deleteTag(target.dataset.value);
@@ -1883,6 +2550,66 @@
     group.querySelectorAll('.scale-btn').forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
   }
 
+  function moveTask(id, dir) {
+    const idx = state.tasks.findIndex(task => task.id === id);
+    const nextIdx = idx + dir;
+    if (idx < 0 || nextIdx < 0 || nextIdx >= state.tasks.length) return;
+    const [task] = state.tasks.splice(idx, 1);
+    state.tasks.splice(nextIdx, 0, task);
+    saveState();
+    render();
+  }
+
+  function moveCategory(id, dir) {
+    const idx = state.categories.findIndex(category => category.id === id);
+    const nextIdx = idx + dir;
+    if (idx < 0 || nextIdx < 0 || nextIdx >= state.categories.length) return;
+    const [item] = state.categories.splice(idx, 1);
+    state.categories.splice(nextIdx, 0, item);
+    saveState();
+    taskSection = 'masters';
+    setRoute('tasks');
+  }
+
+  function moveOwner(name, dir) {
+    const idx = state.owners.indexOf(name);
+    const nextIdx = idx + dir;
+    if (idx < 0 || nextIdx < 0 || nextIdx >= state.owners.length) return;
+    const [item] = state.owners.splice(idx, 1);
+    state.owners.splice(nextIdx, 0, item);
+    saveState();
+    taskSection = 'masters';
+    setRoute('tasks');
+  }
+
+  function moveTag(name, dir) {
+    const idx = state.tags.indexOf(name);
+    const nextIdx = idx + dir;
+    if (idx < 0 || nextIdx < 0 || nextIdx >= state.tags.length) return;
+    const [item] = state.tags.splice(idx, 1);
+    state.tags.splice(nextIdx, 0, item);
+    saveState();
+    taskSection = 'masters';
+    setRoute('tasks');
+  }
+
+  function resetTaskMasters() {
+    if (!confirm('カテゴリ・担当・項目を初期状態に戻します。タスクや記録は削除されません。よろしいですか？')) return;
+    state.categories = CATEGORY_DEFAULTS.map(item => ({ ...item }));
+    state.owners = OWNER_DEFAULTS.slice();
+    state.tags = TAG_DEFAULTS.slice();
+    state.tasks.forEach(task => {
+      if (!state.categories.some(category => category.id === task.category)) task.category = state.categories[0].id;
+      task.owners = (task.owners || []).filter(name => state.owners.includes(name));
+      if (!task.owners.length) task.owners = [state.owners[0] || '自分'];
+      task.tags = (task.tags || []).filter(name => state.tags.includes(name));
+    });
+    saveState();
+    toast('マスタを初期化しました');
+    taskSection = 'masters';
+    setRoute('tasks');
+  }
+
   function deleteCategory(id) {
     if (state.categories.length <= 1) {
       toast('カテゴリは1つ以上必要です');
@@ -1895,7 +2622,8 @@
       if (t.category === id) t.category = state.categories[0].id;
     });
     saveState();
-    setRoute('settings');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
   }
 
   function deleteOwner(name) {
@@ -1909,7 +2637,8 @@
       if (!task.owners.length) task.owners = [state.owners[0] || '自分'];
     });
     saveState();
-    setRoute('settings');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
   }
 
   function deleteTag(name) {
@@ -1918,7 +2647,8 @@
       task.tags = (task.tags || []).filter(tag => tag !== name);
     });
     saveState();
-    setRoute('settings');
+    taskSection = route.view === 'tasks' ? 'masters' : taskSection;
+    setRoute(route.view === 'tasks' ? 'tasks' : 'settings');
   }
 
   function deleteStressLocation(id) {
@@ -1951,6 +2681,7 @@
   document.addEventListener('submit', handleSubmit);
   document.addEventListener('DOMContentLoaded', () => {
     render();
+    loadFromSheetsOnStartup();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }

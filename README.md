@@ -21,8 +21,9 @@ python3 -m http.server 4174
 ## 統合内容
 
 - ACT_tool から移植：AAQ-II / CFQ-7 / CFQ-13 / TSSQ / FFMQ-39 / WHO-5 / VQ の尺度スコアリングと項目定義。
-- task_tool から再構成：旧デフォルト分類、タスク入力、開始日/終了日、重要/緊急、担当、項目、工数、進捗、キャパシティ、4象限、WBS一覧/ガント、場所×部位ストレスマトリクス。
+- task_tool から再構成：旧デフォルト分類、タスク入力、開始日/終了日、重要/緊急、担当、項目、工数、進捗、キャパシティ、タスク並び替え、後追い編集、カテゴリ/担当/項目の編集・削除・並び替え・初期化、4象限、WBS一覧/ガント、場所×部位ストレスマトリクス、GAS / Google スプレッドシート連携。
 - 旧JSONの読み込み：統合版JSONに加え、ACT_tool の `daily_logs` / `scale_sessions` / `work_sessions` と task_tool の `tasks` / `smxData` / `slog` / `masters` を変換して読み込み。
+- カテゴリID：新規カテゴリは日本語名でも英数字IDを自動採番します。名称変更してもIDは変更されません。
 - 追加調査から反映：WHOのストレスセルフヘルプに近い「今ここ」「価値」「小さな行動」、Cochraneレビューで扱われる行動活性化、WHO-5の注意フラグ、厚労省の公的相談窓口案内。
 
 ## 設計方針
@@ -30,7 +31,7 @@ python3 -m http.server 4174
 - スマホ優先、下部5タブ、44px以上のタップ領域。
 - Stratum Design System の「Clarity over decoration」「Accessible by default」「Performance is UX」を優先。
 - 色はニュートラルを主軸に、緑・青・橙・赤を意味別に使用。
-- localStorageを真実のデータとして扱い、ネットワーク連携は実装していません。
+- localStorageを端末内の基本データとして扱います。GAS連携を設定した場合は、保存時にデバウンス同期し、データ管理画面から手動送信・手動読み込みもできます。
 - 自由記述を保存しない設定を用意しています。
 
 ## 安全上の注意

@@ -30,6 +30,19 @@ await page.getByLabel('タスク名').fill('テスト用タスク');
 await page.getByLabel('工数(h)').fill('1.5');
 await page.getByRole('button', { name: '追加する' }).click();
 await page.waitForSelector('text=テスト用タスク');
+await page.locator('[data-action="task-panel"][data-panel="progress"]').first().click();
+await page.locator('form[id^="taskProgressForm-"] input[name="progress"]').evaluate(el => {
+  el.value = '50';
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+});
+await page.getByRole('button', { name: '進捗を保存' }).click();
+await page.waitForSelector('text=50%');
+await page.locator('[data-action="task-section"][data-section="masters"]').click();
+await page.waitForSelector('text=カテゴリ・担当・項目');
+await page.locator('#ownerForm input[name="name"]').fill('QA担当');
+await page.locator('#ownerForm button[type="submit"]').click();
+await page.waitForSelector('form[data-value="QA担当"]');
+await page.locator('[data-action="task-section"][data-section="manage"]').click();
 await page.getByRole('button', { name: '4象限' }).click();
 await page.waitForSelector('text=計画して実行');
 await page.getByRole('button', { name: 'WBS' }).click();
@@ -41,14 +54,24 @@ await page.getByRole('button', { name: 'ケア', exact: true }).click();
 await page.waitForSelector('text=ストレスマトリクス');
 await page.locator('[data-action="stress-select"]').first().click();
 await page.locator('[data-action="stress-score"][data-score="2"]').click();
-await page.getByLabel('メモ（任意）').fill('テスト記録');
-await page.getByRole('button', { name: 'このセルを保存' }).click();
+await page.locator('.stress-note-toggle summary').click();
+await page.locator('#stressCellNote').fill('テスト記録');
+await page.locator('[data-action="stress-save"]').click();
 await page.waitForSelector('text=ケア優先 1件');
 await page.getByRole('button', { name: 'ワーク' }).click();
 await page.waitForSelector('text=60秒グラウンディング');
 
 await page.getByRole('button', { name: '尺度', exact: true }).click();
 await page.waitForSelector('text=WHO-5');
+
+await page.getByRole('button', { name: '設定', exact: true }).click();
+await page.getByRole('button', { name: '読み込み・削除を開く' }).click();
+await page.waitForSelector('text=Google スプレッドシート連携');
+await page.locator('#gasUrlInput').fill('https://script.google.com/macros/s/test-deploy-id/exec');
+await page.getByRole('button', { name: 'URLを保存' }).click();
+await page.waitForSelector('text=Sheets設定済み');
+await page.getByRole('button', { name: 'クリア' }).click();
+await page.waitForSelector('text=Sheets連携を解除しました。');
 
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
 const navCount = await page.locator('.nav-btn').count();

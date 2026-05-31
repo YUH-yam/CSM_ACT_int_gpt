@@ -58,6 +58,10 @@ const result = await page.evaluate(() => {
   };
   const convertedTask = window.ACTTaskCompassAPI.normalizeImportedData(taskToolJson);
   const convertedAct = window.ACTTaskCompassAPI.normalizeImportedData(actToolJson);
+  const convertedJapaneseCategory = window.ACTTaskCompassAPI.normalizeImportedData({
+    tasks: [{ title: '日本語カテゴリのタスク', category: '企画', effort: 1 }],
+    masters: { categories: [{ label: '企画', color: '#1D9E75' }] }
+  });
   return {
     task: {
       dailyCapacity: convertedTask.settings.daily_capacity,
@@ -68,6 +72,10 @@ const result = await page.evaluate(() => {
       outingFocus: convertedTask.stress_latest.outing__focus,
       stressLogKey: Object.keys(convertedTask.stress_logs[0].scores)[0],
       areas: convertedTask.stress_areas.map(area => area.label)
+    },
+    japaneseCategory: {
+      categoryId: convertedJapaneseCategory.categories[0].id,
+      taskCategory: convertedJapaneseCategory.tasks[0].category
     },
     act: {
       checkins: convertedAct.checkins.length,
@@ -83,7 +91,7 @@ await browser.close();
 assert.equal(result.task.dailyCapacity, 7.5);
 assert.equal(result.task.weeklyCapacity, 35);
 assert.equal(result.task.task.title, '旧形式タスク');
-assert.equal(result.task.task.category, 'strategic');
+assert.equal(result.task.task.category, 'Strategic');
 assert.equal(result.task.task.urgent, true);
 assert.equal(result.task.task.important, false);
 assert.equal(result.task.task.status, 'doing');
@@ -92,6 +100,8 @@ assert.equal(result.task.homeSleep.score, 4);
 assert.equal(result.task.outingFocus.score, 1);
 assert.equal(result.task.stressLogKey, 'workplace__mental');
 assert.deepEqual(result.task.areas.slice(0, 5), ['体調', 'メンタル', '脳・集中', 'エネルギー', '睡眠']);
+assert.match(result.japaneseCategory.categoryId, /^[A-Za-z][A-Za-z0-9_-]*$/);
+assert.equal(result.japaneseCategory.taskCategory, result.japaneseCategory.categoryId);
 assert.equal(result.act.checkins, 1);
 assert.equal(result.act.scales, 1);
 assert.equal(result.act.works, 1);
