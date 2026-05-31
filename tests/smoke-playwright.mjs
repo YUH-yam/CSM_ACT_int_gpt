@@ -42,6 +42,9 @@ await page.waitForSelector('text=カテゴリ・担当・項目');
 await page.locator('#ownerForm input[name="name"]').fill('QA担当');
 await page.locator('#ownerForm button[type="submit"]').click();
 await page.waitForSelector('form[data-value="QA担当"]');
+const masterRowsOverflow = await page.evaluate(() => [...document.querySelectorAll('.master-row, .master-add')]
+  .some(el => el.scrollWidth > el.clientWidth + 1));
+const categoryColorControls = await page.locator('.category-master-row .color-input').count();
 await page.locator('[data-action="task-section"][data-section="manage"]').click();
 await page.getByRole('button', { name: '4象限' }).click();
 await page.waitForSelector('text=計画して実行');
@@ -79,6 +82,8 @@ const navCount = await page.locator('.nav-btn').count();
 await browser.close();
 
 if (overflow) throw new Error('mobile viewport has horizontal overflow');
+if (masterRowsOverflow) throw new Error('task settings master rows overflow on mobile');
+if (categoryColorControls < 1) throw new Error('category settings lost color controls');
 if (navCount !== 5) throw new Error(`expected 5 nav buttons, got ${navCount}`);
 
-console.log(JSON.stringify({ ok: true, overflow, navCount, baseURL }, null, 2));
+console.log(JSON.stringify({ ok: true, overflow, masterRowsOverflow, navCount, baseURL }, null, 2));

@@ -837,8 +837,7 @@
         <span class="tiny">表示名・色・順序</span>
       </div>
       <div class="master-list">
-        ${state.categories.map((cat, idx) => `<form id="categoryEditForm-${escapeHTML(cat.id)}" class="master-row" data-id="${escapeHTML(cat.id)}">
-          <button class="swatch-btn" type="button" data-action="focus-color" data-target="catColor-${escapeHTML(cat.id)}" style="background:${escapeHTML(cat.color)}" aria-label="色を変更"></button>
+        ${state.categories.map((cat, idx) => `<form id="categoryEditForm-${escapeHTML(cat.id)}" class="master-row category-master-row" data-id="${escapeHTML(cat.id)}">
           <input class="input color-input" id="catColor-${escapeHTML(cat.id)}" name="color" type="color" value="${escapeHTML(cat.color)}" aria-label="カテゴリ色">
           <input class="input" name="label" required maxlength="24" value="${escapeHTML(cat.label)}" aria-label="カテゴリ名">
           <div class="row master-actions">
@@ -849,7 +848,7 @@
           </div>
         </form>`).join('')}
       </div>
-      <form id="categoryForm" class="master-add no-print">
+      <form id="categoryForm" class="master-add category-master-add no-print">
         <input class="input" name="label" required maxlength="24" placeholder="新しいカテゴリ名">
         <input class="input color-input" name="color" type="color" value="#1D9E75" aria-label="新しいカテゴリ色">
         <button class="btn primary" type="submit">追加</button>

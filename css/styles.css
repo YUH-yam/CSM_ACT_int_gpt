@@ -807,13 +807,21 @@ p {
 .master-row,
 .master-add {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface-2);
+}
+
+.category-master-row {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+}
+
+.category-master-add {
+  grid-template-columns: minmax(0, 1fr) 48px auto;
 }
 
 .master-row.simple,
@@ -827,20 +835,28 @@ p {
 }
 
 .master-actions {
-  justify-content: flex-end;
-}
-
-.swatch-btn {
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  justify-content: end;
+  gap: 8px;
 }
 
 .color-input {
-  width: 44px;
-  min-width: 44px;
-  padding: 4px;
+  width: 48px;
+  min-width: 48px;
+  height: 44px;
+  padding: 3px;
+  cursor: pointer;
+}
+
+.color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 5px;
 }
 
 .task-title {
@@ -1468,15 +1484,37 @@ p {
 @media (max-width: 520px) {
   .task-capacity-form,
   .master-row,
-  .master-add,
   .master-row.simple,
   .master-add.simple {
     grid-template-columns: 1fr;
   }
 
+  .category-master-row {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .category-master-row .master-actions {
+    grid-column: 1 / -1;
+  }
+
+  .category-master-add {
+    grid-template-columns: minmax(0, 1fr) 48px;
+  }
+
+  .category-master-add .btn {
+    grid-column: 1 / -1;
+  }
+
   .master-actions {
-    justify-content: flex-start;
-    flex-wrap: wrap;
+    width: 100%;
+    grid-auto-flow: initial;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .master-actions .btn.small {
+    width: 100%;
+    padding-inline: 6px;
   }
 
   .legacy-task {
